@@ -1,0 +1,272 @@
+{
+  "info": {
+    "_postman_id": "5ae4450d-6d74-48aa-ac75-15027005fcd9",
+    "name": "MIREA-TIP-Practice-29",
+    "description": "Тестирование интеграции с RabbitMQ: отправка событий при создании задач и их обработка воркером",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "52064429",
+    "_collection_link": "https://speeding-equinox-603587.postman.co/workspace/Sun1tAr's-Workspace~9408d03a-1508-4b81-8609-eff0fd27f32a/collection/52064429-5ae4450d-6d74-48aa-ac75-15027005fcd9?action=share&source=collection_link&creator=52064429"
+  },
+  "item": [
+    {
+      "name": "1. Auth Service (получение cookies)",
+      "item": [
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "// Сохраняем cookies из ответа",
+                  "pm.test(\"Cookies are set\", function () {",
+                  "    const cookies = pm.response.headers.all();",
+                  "    const setCookieHeaders = cookies.filter(h => h.key === 'Set-Cookie');",
+                  "    pm.expect(setCookieHeaders.length).to.be.at.least(2);",
+                  "    ",
+                  "    // Сохраняем cookies в переменные коллекции",
+                  "    setCookieHeaders.forEach(header => {",
+                  "        if (header.value.includes('session_id')) {",
+                  "            const match = header.value.match(/session_id=([^;]+)/);",
+                  "            if (match) pm.collectionVariables.set('session_id', match[1]);",
+                  "        }",
+                  "        if (header.value.includes('csrf_token')) {",
+                  "            const match = header.value.match(/csrf_token=([^;]+)/);",
+                  "            if (match) pm.collectionVariables.set('csrf_token', match[1]);",
+                  "        }",
+                  "    });",
+                  "    ",
+                  "    console.log('Session ID:', pm.collectionVariables.get('session_id'));",
+                  "    console.log('CSRF Token:', pm.collectionVariables.get('csrf_token'));",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"student\",\n  \"password\": \"student\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8081/v1/auth/login",
+              "protocol": "http",
+              "host": [
+                "localhost"
+              ],
+              "port": "8081",
+              "path": [
+                "v1",
+                "auth",
+                "login"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. Tasks Service (Producer)",
+      "item": [
+        {
+          "name": "Health Check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test(\"Response has instance_id\", function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('instance_id');",
+                  "    pm.expect(response.status).to.eql('ok');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8082/health",
+              "protocol": "http",
+              "host": [
+                "localhost"
+              ],
+              "port": "8082",
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create Task (with RabbitMQ event)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Генерируем уникальный title для теста",
+                  "const timestamp = Date.now();",
+                  "pm.variables.set('task_title', `Rabbit Test ${timestamp}`);",
+                  "pm.variables.set('task_description', `Testing RabbitMQ event at ${new Date().toISOString()}`);"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 201\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "pm.test(\"Task created successfully\", function () {",
+                  "    const task = pm.response.json();",
+                  "    pm.expect(task).to.have.property('id');",
+                  "    pm.expect(task.title).to.eql(pm.variables.get('task_title'));",
+                  "    pm.expect(task.description).to.eql(pm.variables.get('task_description'));",
+                  "    pm.expect(task.done).to.eql(false);",
+                  "    ",
+                  "    // Сохраняем ID задачи для следующих тестов",
+                  "    pm.collectionVariables.set('last_task_id', task.id);",
+                  "});",
+                  "",
+                  "pm.test(\"Response has X-Instance-ID header\", function () {",
+                  "    pm.expect(pm.response.headers.get('X-Instance-ID')).to.exist;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer demo-token"
+              },
+              {
+                "key": "Cookie",
+                "value": "session_id={{session_id}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf_token}}"
+              },
+              {
+                "key": "X-Request-ID",
+                "value": "pz29-{{$randomUUID}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"{{task_title}}\",\n  \"description\": \"{{task_description}}\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8082/v1/tasks",
+              "protocol": "http",
+              "host": [
+                "localhost"
+              ],
+              "port": "8082",
+              "path": [
+                "v1",
+                "tasks"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get All Tasks",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test(\"Response is an array\", function () {",
+                  "    const tasks = pm.response.json();",
+                  "    pm.expect(tasks).to.be.an('array');",
+                  "    console.log(`Total tasks: ${tasks.length}`);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer demo-token"
+              },
+              {
+                "key": "Cookie",
+                "value": "session_id={{session_id}}"
+              }
+            ],
+            "url": {
+              "raw": "http://localhost:8082/v1/tasks",
+              "protocol": "http",
+              "host": [
+                "localhost"
+              ],
+              "port": "8082",
+              "path": [
+                "v1",
+                "tasks"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "session_id",
+      "value": "demo-session-123"
+    },
+    {
+      "key": "csrf_token",
+      "value": "demo-csrf-456"
+    },
+    {
+      "key": "last_task_id",
+      "value": ""
+    }
+  ]
+}

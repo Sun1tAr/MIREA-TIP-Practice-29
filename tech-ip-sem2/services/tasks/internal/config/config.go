@@ -23,6 +23,11 @@ type RedisConfig struct {
 	JitterSeconds int
 }
 
+type RabbitMQConfig struct {
+	URL   string
+	Queue string
+}
+
 type Config struct {
 	TasksPort    string
 	AuthGRPCAddr string
@@ -30,6 +35,7 @@ type Config struct {
 	InstanceID   string
 	DB           DatabaseConfig
 	Redis        RedisConfig
+	RabbitMQ     RabbitMQConfig
 }
 
 func Load() (*Config, error) {
@@ -52,6 +58,10 @@ func Load() (*Config, error) {
 			DB:            getEnvAsInt("REDIS_DB", 0),
 			TTLSeconds:    getEnvAsInt("CACHE_TTL_SECONDS", 120),
 			JitterSeconds: getEnvAsInt("CACHE_TTL_JITTER_SECONDS", 30),
+		},
+		RabbitMQ: RabbitMQConfig{
+			URL:   getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
+			Queue: getEnv("RABBITMQ_QUEUE", "task_events"),
 		},
 	}
 	return cfg, nil

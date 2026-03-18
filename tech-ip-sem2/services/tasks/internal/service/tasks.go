@@ -8,22 +8,26 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
+	"github.com/sun1tar/MIREA-TIP-Practice-29/tech-ip-sem2/shared/middleware"
 	"github.com/sun1tar/MIREA-TIP-Practice-29/tech-ip-sem2/tasks/internal/cache"
 	"github.com/sun1tar/MIREA-TIP-Practice-29/tech-ip-sem2/tasks/internal/models"
+	"github.com/sun1tar/MIREA-TIP-Practice-29/tech-ip-sem2/tasks/internal/rabbit"
 	"github.com/sun1tar/MIREA-TIP-Practice-29/tech-ip-sem2/tasks/internal/repository"
 )
 
 type TaskService struct {
-	repo  repository.TaskRepository
-	cache *cache.Client
-	log   *logrus.Logger
+	repo     repository.TaskRepository
+	cache    *cache.Client
+	producer *rabbit.Producer
+	log      *logrus.Logger
 }
 
-func NewTaskService(repo repository.TaskRepository, cacheClient *cache.Client, logger *logrus.Logger) *TaskService {
+func NewTaskService(repo repository.TaskRepository, cacheClient *cache.Client, producer *rabbit.Producer, logger *logrus.Logger) *TaskService {
 	return &TaskService{
-		repo:  repo,
-		cache: cacheClient,
-		log:   logger,
+		repo:     repo,
+		cache:    cacheClient,
+		producer: producer,
+		log:      logger,
 	}
 }
 
@@ -58,14 +62,39 @@ func (s *TaskService) Create(ctx context.Context, title, description, dueDate st
 		return nil, err
 	}
 
+	// Публикуем событие в RabbitMQ (best effort)
+	if s.producer != nil {
+		requestID := middleware.GetRequestID(ctx)
+
+		// Используем отдельную горутину, чтобы не задерживать ответ
+		go func() {
+			// Создаём новый контекст с таймаутом для публикации
+			pubCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			if err := s.producer.PublishTaskCreated(pubCtx, task.ID, task.Title, requestID); err != nil {
+				s.log.WithError(err).WithFields(logrus.Fields{
+					"task_id":    task.ID,
+					"request_id": requestID,
+				}).Error("failed to publish task.created event")
+			}
+		}()
+	}
+
 	// Инвалидация кэша списка, так как появилась новая задача
 	go func() {
 		if err := s.cache.InvalidateList(context.Background()); err != nil {
 			s.log.WithError(err).Warn("failed to invalidate list cache after create")
 		} else {
-			s.log.Debug("list cache invalidated after create")
+			s.log.WithField("task_id", task.ID).Debug("list cache invalidated after create")
 		}
 	}()
+
+	s.log.WithFields(logrus.Fields{
+		"task_id":    task.ID,
+		"title":      task.Title,
+		"request_id": middleware.GetRequestID(ctx),
+	}).Info("task created successfully")
 
 	return task, nil
 }
@@ -81,12 +110,12 @@ func (s *TaskService) GetByID(ctx context.Context, id string) (*models.Task, err
 
 	if task != nil {
 		// Cache hit
-		s.log.WithField("task_id", id).Info("CACHE HIT - task retrieved from Redis")
+		s.log.WithField("task_id", id).Debug("CACHE HIT - task retrieved from Redis")
 		return task, nil
 	}
 
 	// Cache miss - идём в БД
-	s.log.WithField("task_id", id).Info("CACHE MISS - fetching from database")
+	s.log.WithField("task_id", id).Debug("CACHE MISS - fetching from database")
 	task, err = s.getFromDB(ctx, id)
 	if err != nil {
 		return nil, err
@@ -97,7 +126,7 @@ func (s *TaskService) GetByID(ctx context.Context, id string) (*models.Task, err
 		if err := s.cache.SetTask(context.Background(), task); err != nil {
 			s.log.WithError(err).WithField("task_id", id).Warn("failed to set cache")
 		} else {
-			s.log.WithField("task_id", id).Info("CACHE SET - task saved to Redis")
+			s.log.WithField("task_id", id).Debug("CACHE SET - task saved to Redis")
 		}
 	}()
 
@@ -117,7 +146,6 @@ func (s *TaskService) getFromDB(ctx context.Context, id string) (*models.Task, e
 }
 
 func (s *TaskService) List(ctx context.Context) ([]*models.Task, error) {
-	// TODO: добавить кэширование списка с инвалидацией
 	s.log.Debug("listing tasks from database")
 	return s.repo.List(ctx)
 }
@@ -167,6 +195,11 @@ func (s *TaskService) Update(ctx context.Context, id string, title, description,
 		}
 	}()
 
+	s.log.WithFields(logrus.Fields{
+		"task_id":    id,
+		"request_id": middleware.GetRequestID(ctx),
+	}).Info("task updated successfully")
+
 	return existing, nil
 }
 
@@ -190,6 +223,11 @@ func (s *TaskService) Delete(ctx context.Context, id string) error {
 		}
 	}()
 
+	s.log.WithFields(logrus.Fields{
+		"task_id":    id,
+		"request_id": middleware.GetRequestID(ctx),
+	}).Info("task deleted successfully")
+
 	return nil
 }
 
@@ -197,6 +235,7 @@ func (s *TaskService) SearchByTitle(ctx context.Context, query string, unsafe bo
 	// Поиск не кэшируем, так как запросы разнообразные
 	if unsafe {
 		if postgresRepo, ok := s.repo.(*repository.PostgresTaskRepository); ok {
+			s.log.WithField("query", query).Warn("⚠️ UNSAFE SEARCH MODE - SQL INJECTION POSSIBLE")
 			return postgresRepo.SearchByTitleUnsafe(ctx, query)
 		}
 	}

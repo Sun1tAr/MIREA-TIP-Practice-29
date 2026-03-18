@@ -1,4 +1,4 @@
-name: tip-practice-28
+name: tip-practice-29
 services:
   postgres:
     image: postgres:15-alpine
@@ -36,6 +36,26 @@ services:
       timeout: 3s
       retries: 5
 
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: rabbitmq
+    hostname: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-network
+
   auth:
     build:
       context: ../services/auth
@@ -71,6 +91,9 @@ services:
       REDIS_DB: 0
       CACHE_TTL_SECONDS: 120
       CACHE_TTL_JITTER_SECONDS: 30
+      # RabbitMQ
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      RABBITMQ_QUEUE: task_events
       LOG_LEVEL: debug
     ports:
       - "8082:8082"
@@ -79,6 +102,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
       auth:
         condition: service_started
     networks:
@@ -86,7 +111,7 @@ services:
 
   graphql:
     build:
-      context: ../services/graphql  # корень tech-ip-sem2
+      context: ../services/graphql
       dockerfile: Dockerfile
     container_name: graphql-service
     environment:
@@ -107,6 +132,23 @@ services:
       - app-network
     restart: unless-stopped
 
+  worker:
+    build:
+      context: ../services/worker
+      dockerfile: Dockerfile
+    container_name: worker-service
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      RABBITMQ_QUEUE: task_events
+      RABBITMQ_PREFETCH: 1
+      LOG_LEVEL: debug
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - app-network
+    restart: unless-stopped
+
 networks:
   app-network:
     driver: bridge
@@ -114,3 +156,4 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  rabbitmq_data:
